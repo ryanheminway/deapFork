@@ -24,7 +24,7 @@ import copy
 from math import sqrt, log, exp
 import numpy
 
-from . import tools
+from deap import tools
 
 
 class Strategy(object):
@@ -158,10 +158,20 @@ class Strategy(object):
             + self.ccovmu * numpy.dot((self.weights * artmp.T), artmp) \
             / self.sigma ** 2
 
-        self.sigma *= numpy.exp((numpy.linalg.norm(self.ps) / self.chiN - 1.) *
-                                self.cs / self.damps)
+        # self.sigma *= numpy.exp((numpy.linalg.norm(self.ps) / self.chiN - 1.) *
+        #                         self.cs / self.damps)
 
-        self.diagD, self.B = numpy.linalg.eigh(self.C)
+        try:
+            self.diagD, self.B = numpy.linalg.eigh(self.C)
+        except:
+            print("Got degenerate eigenvalues?")
+            print("C: ", self.C)
+            print("weights: ", self.weights)
+            print("Sigma: ", self.sigma)
+            
+        self.sigma *= numpy.exp((numpy.linalg.norm(self.ps) / self.chiN - 1.) *
+                                self.cs / self.damps)    
+            
         indx = numpy.argsort(self.diagD)
 
         self.cond = self.diagD[indx[-1]] / self.diagD[indx[0]]

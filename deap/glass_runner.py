@@ -402,38 +402,38 @@ def eant_solve_iris():
 # Ba = Barium content
 # Fe = Iron content
 # class_id = classification (1-7)
-# glass_dataset = pd.read_csv("./../../glassDataset/glassDataset.csv")
-# print(glass_dataset.describe(include='all')) # include all for string class
+glass_dataset = pd.read_csv("./../../glassDataset/glassDataset.csv")
+print(glass_dataset.describe(include='all')) # include all for string class
 
-# msk = np.random.rand(len(glass_dataset)) < 0.8
-# train = glass_dataset[msk]
-# holdout = glass_dataset[~msk]
-# # check the number of records we'll validate with
-# print(holdout.describe())
-# # check the number of records we'll train our algorithm with
-# print(train.describe())
+msk = np.random.rand(len(glass_dataset)) < 0.8
+train = glass_dataset[msk]
+holdout = glass_dataset[~msk]
+# check the number of records we'll validate with
+print(holdout.describe())
+# check the number of records we'll train our algorithm with
+print(train.describe())
 
-# RI = train.RI.values # torch.from_numpy(train.RI.values).float()
-# Na = train.Na.values # torch.from_numpy(train.Na.values).float()
-# Mg = train.Mg.values # torch.from_numpy(train.Mg.values).float()
-# Al = train.Al.values # torch.from_numpy(train.Al.values).float()
-# Si = train.Si.values # torch.from_numpy(train.Si.values).float()
-# K = train.K.values # torch.from_numpy(train.K.values).float()
-# Ca = train.Ca.values # torch.from_numpy(train.Ca.values).float()
-# Ba = train.Ba.values # torch.from_numpy(train.Ba.values).float()
-# Fe = train.Fe.values # torch.from_numpy(train.Fe.values).float()
-# Y = train.class_id.values  # this is our target, now mapped to Y
+RI = train.RI.values # torch.from_numpy(train.RI.values).float()
+Na = train.Na.values # torch.from_numpy(train.Na.values).float()
+Mg = train.Mg.values # torch.from_numpy(train.Mg.values).float()
+Al = train.Al.values # torch.from_numpy(train.Al.values).float()
+Si = train.Si.values # torch.from_numpy(train.Si.values).float()
+K = train.K.values # torch.from_numpy(train.K.values).float()
+Ca = train.Ca.values # torch.from_numpy(train.Ca.values).float()
+Ba = train.Ba.values # torch.from_numpy(train.Ba.values).float()
+Fe = train.Fe.values # torch.from_numpy(train.Fe.values).float()
+Y = train.class_id.values  # this is our target, now mapped to Y
 
-# # Testing normalizing
-# RI = (RI - RI.mean()) / RI.std()
-# Na = (Na - Na.mean()) / Na.std()
-# Mg = (Mg - Mg.mean()) / Mg.std()
-# Al = (Al - Al.mean()) / Al.std()
-# Si = (Si - Si.mean()) / Si.std()
-# K = (K - K.mean()) / K.std()
-# Ca = (Ca - Ca.mean()) / Ca.std()
-# Ba = (Ba - Ba.mean()) / Ba.std()
-# Fe = (Fe - Fe.mean()) / Fe.std()
+# Testing normalizing
+RI = (RI - RI.mean()) / RI.std()
+Na = (Na - Na.mean()) / Na.std()
+Mg = (Mg - Mg.mean()) / Mg.std()
+Al = (Al - Al.mean()) / Al.std()
+Si = (Si - Si.mean()) / Si.std()
+K = (K - K.mean()) / K.std()
+Ca = (Ca - Ca.mean()) / Ca.std()
+Ba = (Ba - Ba.mean()) / Ba.std()
+Fe = (Fe - Fe.mean()) / Fe.std()
 
 def test_glass_acc(individual, dataset):
     """
@@ -615,46 +615,70 @@ def eant_solve_glass():
 # ----------------- (END) Solving Glass Classification  ------------------ #
 
 # ----------------- (START) Solving Regression  ------------------ #
-"""
-This block demonstrates solving a function-finding regression problem.
-Specifically, I task EANT with modeling the function:
-    Y = 2.718 * a^2 + 3.146 * a
+def evaluate_glass(ind):
+    """
+    Fitness function for creating an Glass classifier using EANT. Tests an
+    individual on the entire training set and returns the cross entropy loss.
+    """
+    global RI, Na, Mg, Al, Si, K, Ca, Ba, Fe, Y
     
-GEPNN was used to solve this task as was published in the paper:
-    "Gene Expression Programming Neural Network for Regression and Classification"
-"""
-def evaluate_regr(ind):
-    #print("Individual: ", ind)
     func = ind.evaluate
+    Yp_list = []
+    # Get predicted labels
+    for i in range(len(RI)):
+        _ri = RI[i]
+        _na = Na[i]
+        _mg = Mg[i]
+        _al = Al[i]
+        _si = Si[i]
+        _k = K[i]
+        _ca = Ca[i]
+        _ba = Ba[i]
+        _fe = Fe[i]
+        
+        result_1 = func(ri=_ri, na=_na, mg=_mg, al=_al, si=_si, k=_k, ca=_ca, ba=_ba, fe=_fe)
 
-    def true_func(a):
-        return (2.718 * (a * a)) + (3.416 * a)
+        result_2 = torch.from_numpy(np.array(result_1)).float()
+
+        # (NOTE Ryan) Softmax done during evaluation for EANT
+        softmax = torch.nn.Softmax(dim=0)
+        result = softmax(result_2)
+        if torch.isnan(result).any():
+            print("Got result: ", result_1)
+            print("Got result numpy torch: ", str(result_2))
+            print("How did we get nan?")
+        Yp_list.append(result)
     
-    M = 1000
-    # (NOTE Ryan) Trying to follow fitness func definition according to paper
-    for i in range(10):
-        ours = func(a=i, b=i, c=i)[0]
-
-        truth = true_func(i)
-        #print("Input: {}, our answer: {}, good answer: {}".format(i, ours, truth))
-        fitness_i = abs(ours - truth)
-        M = M - fitness_i
-    #print("Final M: ", M)
-    return M,
+    Yp = torch.Tensor(len(Yp_list), 3).float()
+    #print("Yp_list: ", Yp_list)
+    torch.stack(Yp_list, dim=0, out=Yp) # Turn list of tensors into stacked tensor
+    #print("Yp: ", Yp)
+    # True labels
+    labels = [torch.tensor(x-1) for x in Y]
+    #print("labels: ", labels)
+    labels_t = torch.Tensor(len(labels), 3).long()
+    torch.stack(labels, dim=0, out=labels_t)
+    #print("Yp: ", labels_t)
+    # Cross entropy loss as fitness
+    loss = torch.nn.CrossEntropyLoss(reduction='sum')
+    #print("loss: ", loss(Yp, labels_t))
+    if math.isnan(loss(Yp, labels_t).item()):
+        print("How did we get nan?")
+    return loss(Yp, labels_t).item(),
     
 def eant_solve_regr():
     classifier = False
-    guided = False
-    outputs = 1
-    inputs = ['a', 'b', 'c']
+    guided = True
+    outputs = 7
+    inputs = ['ri', 'na', 'mg', 'al', 'si', 'k', 'ca', 'ba', 'fe']
     n_gens = 1000 # 1000
     n_pop = 50
-    mut_rate = 0.1
+    mut_rate = 0.05
     iters = 100
     
     today = time.strftime("%Y%m%d")
     run_dir = "runs"
-    model_path = str(Path.cwd()) + "/" + run_dir + "/" + today + '_regr' 
+    model_path = str(Path.cwd()) + "/" + run_dir + "/" + today + '_glass' 
     if guided:
         model_path += "_guided"
     model_path += "/"
@@ -666,16 +690,16 @@ def eant_solve_regr():
         f.write(content)  
         f.close()
         
-    _write_to_file(results_file, "Running EANT solver for Regression\n")
+    _write_to_file(results_file, "Running EANT solver for Glass Classification\n")
     
-    creator.create("FitnessMax", base.Fitness, weights=(1,))
-    creator.create("Individual", Genome, fitness=creator.FitnessMax)
+    creator.create("FitnessMin", base.Fitness, weights=(-1,))
+    creator.create("Individual", Genome, fitness=creator.FitnessMin)
     
     toolbox = base.Toolbox()
     toolbox.register("generate", generate, outputs, guided, classifier, *inputs)
     toolbox.register("individual", creator.Individual, toolbox.generate())
     toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    toolbox.register("evaluate", evaluate_regr)
+    toolbox.register("evaluate", evaluate_glass)
     toolbox.register("mutate", mutate_cge)
     toolbox.register("select", tools.selTournament, tournsize=3)
     toolbox.register("getElites", tools.selBest)
@@ -693,14 +717,24 @@ def eant_solve_regr():
         
         pop, log = eant_algorithm.eant_algorithm(pop, toolbox, starting_mutpb=mut_rate, ngen=n_gens,
                                                stats=stats, halloffame=hof, verbose=True)
-
+        
+        best = hof[0]
+        train_acc = test_glass_acc(best, train)
+        test_acc = test_glass_acc(best, holdout)
+        print("Got Glass Train Accuracy on best: ", train_acc)
+        print("Got Glass Test Accuracy on best: ", test_acc)
+        _write_to_file(results_file, "Iter {} got train / test accuracies: {} / {} \n".format(i, train_acc, test_acc))
+    
+        # Add final train / test accuracies as a non-series row
+        record = { "train_acc" : train_acc, "test_acc" : test_acc }
+        log.record(gen=n_gens + 1, nevals=0, **record)
         # Save statistics as a pickle object file on disk
         pkl_file = open(model_path + "stats_iter_{}.pickle".format(i), 'wb')
         pickle.dump(log, pkl_file)
     _write_to_file(results_file, "Finished EANT solver iterations!")    
 
 
-# ----------------- (END) Solving Regression ------------------ #
+# ----------------- (END) Solving Glass Classification  ------------------ #
 
 
 if __name__ == "__main__":

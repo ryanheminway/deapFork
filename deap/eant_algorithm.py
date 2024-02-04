@@ -10,11 +10,34 @@ import random
 
 from deap import tools
 from eant import are_graphs_similar, Genome
-from deap import cma, creator
+from deap import creator # ,cma
 import collections
 import copy
 
+import cma
+
+import numpy
+
 def varMutateOnly(population, toolbox, mutpb):
+    """
+    Vary a population by applying mutation (structural mutation) to all 
+    Neurons in the population, with some probability mutpb.
+
+    Parameters
+    ----------
+    population : List
+        List representing a current population of individual solutions.
+    toolbox : deap.base.Toolbox
+        Toolbox to use for applying mutation.
+    mutpb : Float
+        Float representing chance that any Neuron in an individual is mutated.
+
+    Returns
+    -------
+    offspring : List
+        A new population of Genomes, that has been mutated.
+
+    """
     offspring = [toolbox.clone(ind) for ind in population]
     for i in range(len(offspring)):
         offspring[i] = creator.Individual(toolbox.mutate(offspring[i], mutpb))
@@ -25,11 +48,20 @@ def varMutateOnly(population, toolbox, mutpb):
 
 
 class Cluster(object):
-    def __init__(self, representative, strategy, protected_gens=10):
-        # TODO protected_gens is arbitrary
-        self.rep = creator.Individual(representative)
+    """
+    Represents a species in an EANT population, characterized by all 
+    individuals in the cluster having similar (identical) network topologies.
+    This allows them to be grouped, and have their weights optimized at once.
+    One representative from a cluster is used to optimize weights. At the 
+    end of any generation, all individuals of the cluster have their weights
+    updated to match the representative. Each cluster has a tracked CMA Strategy
+    object which gets updated as weights are optimized. As long as the Cluster 
+    exists in the population, weights continue to get optimized from the same
+    Strategy. 
+    """
+    def __init__(self, representative, strategy):
+        self.rep = creator.Individual(representative.clone())
         self.strat = copy.copy(strategy)
-        self.protected_gens = protected_gens
         self.members = []
         
     def is_empty(self):
@@ -71,7 +103,9 @@ class Cluster(object):
 
 def _run_cma_es(cluster, evals, eval_fn):
     """
-    Run the CMA-ES algorithm to update the weights of a given Cluster.
+    Run the CMA-ES algorithm to update the weights of a given Cluster. All
+    individuals in the given cluster will have their weights mutated by this
+    method.
 
     Parameters
     ----------
@@ -90,7 +124,6 @@ def _run_cma_es(cluster, evals, eval_fn):
     if evals <= 0:
         return
     cma_strat = cluster.strat
-    
     class cma_individual(list):
         def __init__(self, weights, fitness):
             list.__init__(self, weights)
@@ -99,7 +132,7 @@ def _run_cma_es(cluster, evals, eval_fn):
     def init_new_genome(weights):
         # Individual in CMA-ES population will be identical to representative
         # of cluster, just with unique weights
-        g = Genome(cluster.rep)
+        g = cluster.rep.clone() # Genome(cluster.rep)
         g.set_weights(weights)
         g = creator.Individual(g)
         return g
@@ -128,46 +161,199 @@ def _run_cma_es(cluster, evals, eval_fn):
     cluster.update_fitness(eval_fn)
 
 
-def eant_algorithm(population, toolbox, starting_mutpb, ngen, stats=None,
-                   halloffame=None, verbose=False):
-    logbook = tools.Logbook()
-    logbook.header = ['gen', 'nevals'] + (stats.fields if stats else [])
+def _get_fitness_and_neurons(population, toolbox):
+    """
+    Helper method to evaluate the fitnesses of a population and count their 
+    total Neurons.
     
-    # Need to know neuron count for mutation rate updates specified by
-    # EANT paper
-    start_neuron_count = 0
-    for ind in population:
-        start_neuron_count += len(ind.neuron_list)
-    
-    # TODO n is totally arbitrary atm, EANT paper does not indicate which value is used
-    # Number of generations to span for stagnant fitness checks
-    n = 6
-    last_n_fitnesses = collections.deque([0 for i in range(n)], maxlen=n)
-    # TODO This threshold is also arbitrary... not sure how to set
-    fit_growth_threshold = 0.25
-    # Generations to protect new structures
-    # TODO This is also arbitrary...
-    gens_protected = 4
-    
-    
-    best_fit_this_gen = float('-inf')
-    curr_neuron_count = 0
+    Return: Tuple
+        Result tuple indicating (best_fitness, neuron_count)
+    """
+    best_fit = float('-inf')
+    neuron_count = 0
     # STEP 0: Evaluate the individuals with an invalid fitness
     for ind in population:
         # Track how long new structures have been around
         ind.step_protection()
         # Track # Neurons in population
-        curr_neuron_count += len(ind.neuron_list)
+        neuron_count += len(ind.neuron_list)
         
         if not ind.fitness.valid:
             fitness = toolbox.evaluate(ind)
             ind.fitness.values = fitness
         
         # TODO only applicable to single-objective fitness atm
-        if ind.fitness.values[0] > best_fit_this_gen:
-            best_fit_this_gen = ind.fitness.values[0]
+        if ind.fitness.values[0] > neuron_count:
+            neuron_count = ind.fitness.values[0]
+            
+    return neuron_count, neuron_count
+
+
+def _make_clusters(population, clusters, gens_protected):
+    """
+    Helper method to update a list of clusters based on a given population.
+    This method will create clusters out of a population. This method
+    will mutate the given list `clusters`.
+
+    """
+    for c in clusters:
+        c.clear_members() # Stop tracking last gen's pop
+    for ind in population:
+        clustered = False
+        # Look for an existing Cluster for this individual
+        for c in clusters:
+            # Add individual if its an isomorphic match
+            if c.add_member(ind):
+                # Track as parent
+                ind.parent_cluster = c
+                clustered = True
+                break
+        if not clustered:
+            # Found unique structure, create a brand new Cluster for it.
+            # Setting initial distribution of weights to be gaussian around
+            # 0 with STD of .3
+            N = len(ind)
+            if ind.parent_cluster == None or True:
+                new_strat = cma.Strategy(centroid=[0.0]*N, sigma=0.3)
+            else:
+                # TODO This CMA adapation of parent cluster is not working well
+                
+                print("C matrix: ", ind.parent_cluster.strat.C)
+                print("ind len: ", len(ind))
+                print("C len: ", len(ind.parent_cluster.strat.C))
+                # Use old entries in new CMA
+                # TODO Not sure this is the way they did it in the original EANT paper
+                size_diff = N - len(ind.parent_cluster.strat.C)
+                old_size = len(ind.parent_cluster.strat.C)
+                new_cmatrix = ind.parent_cluster.strat.C
+                new_centroid = ind.parent_cluster.strat.centroid
+                new_sigma = ind.parent_cluster.strat.sigma
+                if (size_diff >= 0):
+                    new_c = numpy.identity(N)
+                    centr = [0.0] * N 
+                    # Calculate which parts of old C matrix can be used, based on
+                    # what was gained or lost in mutation
+                    last_added = -1
+                    added = 0
+                    for added_idx in ind.indices_added:
+                        print("Last_added: ", last_added)
+                        print("Added: ", added_idx)
+                        print("Shape: ", new_cmatrix[:, (last_added + 1 - added):added_idx].shape)
+                        new_c[:old_size, last_added + 1:added_idx] = new_cmatrix[:, (last_added + 1):added_idx]
+                        centr[last_added+1:added_idx] = new_centroid[(last_added + 1):added_idx]
+                        last_added = added_idx
+                        added += 1
+                    new_c[:old_size, last_added + 1:] = new_cmatrix[:, (last_added + 1 - added):]
+                    centr[last_added+1:] = new_centroid[(last_added + 1 - added):]
+                    new_centroid= centr
+                    new_cmatrix = new_c
+                    
+                elif (size_diff < 0):
+                    new_c = numpy.identity(N)
+                    centr = [0.0] * N 
+                    last_lost = -1
+                    added = 0
+                    for lost_idx in ind.indices_lost:
+                        new_c[:, last_lost + 1:lost_idx] = new_cmatrix[:N, last_lost + 1:lost_idx]
+                        centr[last_lost+1:lost_idx] = new_centroid[last_lost+1:lost_idx]
+                        last_lost = lost_idx
+                        added += 1
+                    new_c[:, last_lost + 1:] = new_cmatrix[:N, last_lost + 1 - added:]
+                    centr[last_lost+1:] = new_centroid[last_lost+1-added:]
+                    new_centroid = centr
+                    new_cmatrix = new_c
+                    
+                    # new_cmatrix = new_cmatrix[:N, :N]
+                    
+                print("New C: ", new_cmatrix)
+                test = numpy.identity(N)
+                print("NEW C SHAPE: ", new_cmatrix.shape)
+                print("ID SHAPE: ", test.shape)
+                # Use parent cluster as starting Covariance Matrix
+                #new_strat = cma.Strategy(centroid=[0.0]*N, sigma=0.3, cmatrix=new_cmatrix)
+                new_strat = cma.Strategy(centroid=new_centroid, sigma=new_sigma, cmatrix=new_cmatrix)
+            new_cluster = Cluster(representative=ind, strategy=new_strat)
+            if not new_cluster.add_member(ind):
+                print("This should never happen")
+                exit(1)
+            # Mark individual as protected
+            ind.set_protection(gens_protected)
+            clusters.append(new_cluster)
+
+
+def _do_mutation(population, mut_rate, toolbox):
+    # "Protected" individuals represent new toplogies not yet optimized
+    protected = [ind for ind in population if ind.is_protected()]
+    unprotected = [ind for ind in population if not ind.is_protected()]
+    print("mutate prob: ", mut_rate)
+    # Structural mutation
+    new_offspring = []
+    new_individuals = varMutateOnly(unprotected, toolbox, mut_rate)
+    for i in new_individuals:
+        new_offspring.append(i)
+    for i in protected:
+        # TODO Would be better to avoid mutating individual from an outside process like this 
+        # Need to reset previous mutation tracking for individuals that don't get mutated this generation
+        i.indices_added = []
+        i.indices_lost = []
+        new_offspring.append(i)
+    return new_offspring
+
+
+# TODO Last few init params are arbitrarily set... no params given in EANT paper
+def eant_algorithm(population, toolbox, starting_mutpb, ngen, stats=None,
+                   halloffame=None, verbose=False, fit_prog_gens=6, 
+                   fit_growth_threshold=0.2, gens_protected=10, n_elites=3):
+    """
+    Run the EANT evolutionary algorithm as described by the paper: 
+        https://web.archive.org/web/20070613093500/http://www.ks.informatik.uni-kiel.de/~yk/ESANN2005EANT.pdf
+
+    Parameters
+    ----------
+    population : List
+        List of Creator.Individuals (Genomes with a Fitness attribute). Represents
+        starting population for the algorithm.
+    toolbox : deap.base.Toolbox
+        Toolbox of evolutionary computational helper methods.
+    starting_mutpb : Float
+        Probability to apply mutation to any Neuron in the population-to-be-mutated.
+        Represents the starting probability. Probability will change over time
+        as Neurons get added to the population.
+    ngen : Integer
+        Number of Generations to run for
+        
+    fit_prog_gens : Integer, optional
+        The number of generations to span when looking at fitness progression.
+        The default is 6. Structural mutation is initiated whenever fitness
+        progression has stagnated.
+    fit_growth_threshold : Float, optional
+        The threshold for how much fitness must grow in order to represent real
+        progress. The default is 0.2.
+    gens_protected : Integer, optional
+        Number of generations to protect a new structure in the population. This
+        gives a new topology time to optimize its weights before competing with
+        the entire population. The default is 10.
+    n_elites : Integer, optional
+        Number of Elites. An Elite is an individual with high fitness which will
+        get transferred to the next generation's population no matter what.
+        The default is 3.
+
+    Returns
+    -------
+    population : List
+        State of population at the end of the specified number of generations.
+
+    """
     
+    logbook = tools.Logbook()
+    logbook.header = ['gen', 'nevals'] + (stats.fields if stats else [])
+    # Need to know neuron count for mutation rate updates specified by EANT paper
+    start_neuron_count = sum([len(ind.neuron_list) for ind in population])
+    # Number of generations to span for stagnant fitness checks
+    last_n_fitnesses = collections.deque([0 for i in range(fit_prog_gens)], maxlen=fit_prog_gens)
     
+    # STEP 0: Evaluate the individuals with an invalid fitness
+    best_fit_this_gen, curr_neuron_count = _get_fitness_and_neurons(population, toolbox)
     clusters = [] # Cluster objects
     
     # Begin the generational process
@@ -175,84 +361,36 @@ def eant_algorithm(population, toolbox, starting_mutpb, ngen, stats=None,
         # STEP 1: Select the next generation individuals
         # Find "protected" individuals which are newly added structures
         protected = [ind for ind in population if ind.is_protected()]
-        offspring = toolbox.select(population, len(population) - len(protected))
+        elites = toolbox.getElites(population, n_elites)
+        elites = [e for e in elites if e not in protected]
+        offspring = toolbox.select(population, len(population) - len(protected) - len(elites))
         print("Gen: ", gen, " got proteced: ", len(protected))
         print("Gen: ", gen, " got offspring: ", len(offspring))
-        
         offspring = offspring + protected
         print("Gen: ", gen, " got ALL offspring: ", len(offspring))
         print("Gen: ", gen, " got clusters: ", clusters)
         
-        # STEP 2: Check fitness progress to determine type of mutation in this gen
+        # STEP 2: Check fitness progress to determine if structural mutation happens
         new_pop = []
         last_n_fitnesses.append(best_fit_this_gen)
-        if gen >= n and (last_n_fitnesses[-1] - last_n_fitnesses[0] < fit_growth_threshold):
+        if gen >= fit_prog_gens and (last_n_fitnesses[-1] - last_n_fitnesses[0] < fit_growth_threshold):
             # STEP 2a: Structural mutation
             # Calc new mut_pb based on number of neurons in population
             # Equation 3 in EANT paper
             new_mutpb = (start_neuron_count / curr_neuron_count) * starting_mutpb
-            # "Protected" individuals represent new toplogies not yet optimized
-            protected = [ind for ind in offspring if ind.is_protected()]
-            unprotected = [ind for ind in offspring if not ind.is_protected()]
-            print("mutate prob: ", new_mutpb)
-            # Structural mutation
-            new_offspring = []
-            new_individuals = varMutateOnly(unprotected, toolbox, new_mutpb)
-            for i in new_individuals:
-                new_offspring.append(i)
-            for i in protected:
-                new_offspring.append(i)
-            offspring = new_offspring
-            
+            # Mutate population                        
+            offspring = _do_mutation(offspring, new_mutpb, toolbox)
+        
+        # Elites did not get mutated
+        offspring = offspring + elites
+        assert(len(offspring) == len(population))
             
         # STEP 3: Evaluate the individuals with an invalid fitness
-        curr_neuron_count = 0
-        best_fit_this_gen = float('-inf')
-        for ind in offspring:
-            # Track how long new structures have been around
-            ind.step_protection()
-            # Track # Neurons in population
-            curr_neuron_count += len(ind.neuron_list)
-            
-            if not ind.fitness.valid:
-                fitness = toolbox.evaluate(ind)
-                ind.fitness.values = fitness
-            
-            # TODO only applicable to single-objective fitness atm
-            if ind.fitness.values[0] > best_fit_this_gen:
-                best_fit_this_gen = ind.fitness.values[0]
-            
+        best_fit_this_gen, curr_neuron_count = _get_fitness_and_neurons(offspring, toolbox)
             
         # STEP 4: Weights "mutation" through CMA-ES
         # Cluster individuals by structure
-        for c in clusters:
-            c.clear_members() # Stop tracking last gen's pop
-        for ind in offspring:
-            clustered = False
-            # Look for an existing Cluster for this individual
-            for c in clusters:
-                # Add individual if its an isomorphic match
-                if c.add_member(ind):
-                    # Track as parent
-                    ind.parent_cluster = c
-                    clustered = True
-                    break
-            if not clustered:
-                #print("Got a unique structure")
-                # Found unique structure, create a brand new Cluster for it.
-                # Setting initial distribution of weights to be gaussian around
-                # 0 with STD of 1
-                N = len(ind)
-                if ind.parent_cluster == None:
-                    new_strat = cma.Strategy(centroid=[0.0]*N, sigma=1.0)
-                else:
-                    # Use parent cluster as starting Covariance Matrix
-                    new_strat = cma.Strategy(centroid=[0.0]*N, sigma=1.0, cmatrix=ind.parent_cluster.C)
-                new_cluster = Cluster(representative=ind, strategy=new_strat)
-                new_cluster.add_member(ind)
-                # Mark individual as protected
-                ind.set_protection(gens_protected)
-                clusters.append(new_cluster)
+        _make_clusters(offspring, clusters, gens_protected)
         # Calculate total average-fitness across clusters
         tot_avg_fitness = sum([c.avg_fitness() for c in clusters])
         # Carry out CMA-ES once all are clustered
@@ -261,7 +399,7 @@ def eant_algorithm(population, toolbox, starting_mutpb, ngen, stats=None,
                 continue
             # Number of evals weighted by a cluster's avg fitness
             # Equation from EANT paper
-            n_evals = int((c.avg_fitness() / tot_avg_fitness) * len(population))
+            n_evals = int(c.avg_fitness() / tot_avg_fitness) * len(population)
             # Run CMA-ES and update weights of all individuals in this cluster
             _run_cma_es(c, n_evals, toolbox.evaluate)
             for member in c.members:
@@ -276,13 +414,11 @@ def eant_algorithm(population, toolbox, starting_mutpb, ngen, stats=None,
             
         # Append the current generation statistics to the logbook
         record = stats.compile(population) if stats else {}
+        # Add, as an object, the best individual so far
+        logbook.record(best_ind=halloffame[0])
         logbook.record(gen=gen, nevals=len(population), **record)
         if verbose:
             print(logbook.stream)
-            
-        # Short circuit if we found a solution
-        if toolbox.evaluate(halloffame[0])[0] == 4:
-            return population, logbook
         
         # Clean out dead clusters
         clusters = [c for c in clusters if not c.is_empty()]

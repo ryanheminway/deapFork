@@ -1,4 +1,5 @@
 # folders to ignore
+deap/runs/
 build/
 dist/
 doc/_build/

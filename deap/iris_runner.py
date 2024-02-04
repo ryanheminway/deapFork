@@ -204,28 +204,28 @@ def class_to_int(sample_class):
 # p_len = Petal Length (cm)
 # p_wid = Petal Width (cm)
 # c = classification (Iris-setosa', 'Iris-virginica', 'Iris-versicolour')
-# iris_dataset = pd.read_csv("./../../irisDataset/irisDataset.csv")
-# print(iris_dataset.describe(include='all')) # include all for string class
+iris_dataset = pd.read_csv("./../../irisDataset/irisDataset.csv")
+print(iris_dataset.describe(include='all')) # include all for string class
 
-# msk = np.random.rand(len(iris_dataset)) < 0.8
-# train = iris_dataset[msk]
-# holdout = iris_dataset[~msk]
-# # check the number of records we'll validate our MSE with
-# print(holdout.describe())
-# # check the number of records we'll train our algorithm with
-# print(train.describe())
+msk = np.random.rand(len(iris_dataset)) < 0.8
+train = iris_dataset[msk]
+holdout = iris_dataset[~msk]
+# check the number of records we'll validate our MSE with
+print(holdout.describe())
+# check the number of records we'll train our algorithm with
+print(train.describe())
 
-# S_LEN = train.s_len.values # torch.from_numpy(train.s_len.values).float()
-# S_WID  = train.s_wid.values # torch.from_numpy(train.s_wid.values).float()
-# P_LEN = train.p_len.values # torch.from_numpy(train.p_len.values).float()
-# P_WID = train.p_wid.values # torch.from_numpy(train.p_wid.values).float()
-# Y = train.c.values  # this is our target, now mapped to Y
+S_LEN = train.s_len.values # torch.from_numpy(train.s_len.values).float()
+S_WID  = train.s_wid.values # torch.from_numpy(train.s_wid.values).float()
+P_LEN = train.p_len.values # torch.from_numpy(train.p_len.values).float()
+P_WID = train.p_wid.values # torch.from_numpy(train.p_wid.values).float()
+Y = train.c.values  # this is our target, now mapped to Y
 
-# # Testing normalizing
-# S_LEN = (S_LEN - S_LEN.mean()) / S_LEN.std()
-# S_WID = (S_WID - S_WID.mean()) / S_WID.std()
-# P_LEN = (P_LEN - P_LEN.mean()) / P_LEN.std()
-# P_WID = (P_WID - P_WID.mean()) / P_WID.std()
+# Testing normalizing
+S_LEN = (S_LEN - S_LEN.mean()) / S_LEN.std()
+S_WID = (S_WID - S_WID.mean()) / S_WID.std()
+P_LEN = (P_LEN - P_LEN.mean()) / P_LEN.std()
+P_WID = (P_WID - P_WID.mean()) / P_WID.std()
 
 def test_accuracy(individual, dataset):
     """
@@ -614,102 +614,11 @@ def eant_solve_glass():
 
 # ----------------- (END) Solving Glass Classification  ------------------ #
 
-# ----------------- (START) Solving Regression  ------------------ #
-"""
-This block demonstrates solving a function-finding regression problem.
-Specifically, I task EANT with modeling the function:
-    Y = 2.718 * a^2 + 3.146 * a
-    
-GEPNN was used to solve this task as was published in the paper:
-    "Gene Expression Programming Neural Network for Regression and Classification"
-"""
-def evaluate_regr(ind):
-    #print("Individual: ", ind)
-    func = ind.evaluate
-
-    def true_func(a):
-        return (2.718 * (a * a)) + (3.416 * a)
-    
-    M = 1000
-    # (NOTE Ryan) Trying to follow fitness func definition according to paper
-    for i in range(10):
-        ours = func(a=i, b=i, c=i)[0]
-
-        truth = true_func(i)
-        #print("Input: {}, our answer: {}, good answer: {}".format(i, ours, truth))
-        fitness_i = abs(ours - truth)
-        M = M - fitness_i
-    #print("Final M: ", M)
-    return M,
-    
-def eant_solve_regr():
-    classifier = False
-    guided = False
-    outputs = 1
-    inputs = ['a', 'b', 'c']
-    n_gens = 1000 # 1000
-    n_pop = 50
-    mut_rate = 0.1
-    iters = 100
-    
-    today = time.strftime("%Y%m%d")
-    run_dir = "runs"
-    model_path = str(Path.cwd()) + "/" + run_dir + "/" + today + '_regr' 
-    if guided:
-        model_path += "_guided"
-    model_path += "/"
-    Path(model_path).mkdir(parents=True, exist_ok=True)
-
-    results_file = model_path + '/results.txt'
-    def _write_to_file(file, content):
-        f = open(file, 'a')
-        f.write(content)  
-        f.close()
-        
-    _write_to_file(results_file, "Running EANT solver for Regression\n")
-    
-    creator.create("FitnessMax", base.Fitness, weights=(1,))
-    creator.create("Individual", Genome, fitness=creator.FitnessMax)
-    
-    toolbox = base.Toolbox()
-    toolbox.register("generate", generate, outputs, guided, classifier, *inputs)
-    toolbox.register("individual", creator.Individual, toolbox.generate())
-    toolbox.register("population", tools.initRepeat, list, toolbox.individual)
-    toolbox.register("evaluate", evaluate_regr)
-    toolbox.register("mutate", mutate_cge)
-    toolbox.register("select", tools.selTournament, tournsize=3)
-    toolbox.register("getElites", tools.selBest)
-    
-    for i in range(iters):
-        print("Running iteration: ", i)
-        pop = toolbox.population(n=n_pop)
-        hof = tools.HallOfFame(3)
-        stats = tools.Statistics(lambda ind: ind.fitness.values)
-        stats.register("avg", np.mean)
-        stats.register("std", np.std)
-        stats.register("min", np.min)
-        stats.register("max", np.max)
-        stats.register("med", np.median)
-        
-        pop, log = eant_algorithm.eant_algorithm(pop, toolbox, starting_mutpb=mut_rate, ngen=n_gens,
-                                               stats=stats, halloffame=hof, verbose=True)
-
-        # Save statistics as a pickle object file on disk
-        pkl_file = open(model_path + "stats_iter_{}.pickle".format(i), 'wb')
-        pickle.dump(log, pkl_file)
-    _write_to_file(results_file, "Finished EANT solver iterations!")    
-
-
-# ----------------- (END) Solving Regression ------------------ #
-
-
 if __name__ == "__main__":
     # rand_tests()
     
     #eant_solve_xor()
     
-    #eant_solve_iris()
+    eant_solve_iris()
     
     #eant_solve_glass()
-    
-    eant_solve_regr()

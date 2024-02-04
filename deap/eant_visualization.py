@@ -19,25 +19,29 @@ def graph_eant(genome, label_renaming_map=None):
     :param label_renaming_map: dict, which maps the old name of a primitive (or a linking function)
         to a new one for better visualization. The default label for each node is just the name of the primitive
         placed on this node. For example, you may provide ``renamed_labels={'and_': 'and'}``.
-    :return: A node list, an edge list, and a dictionary of labels.
+    :return: an edge list, and a dictionary of labels.
 
     You can visualize a genome and export the tree visualization to an image file directly using the
     :func:`export_eant_tree` function.
     """
-    nodes = []
     edges = []
     labels = {}
     input_id_lookup = {}
     
     if isinstance(genome, Genome):
-        # Add neurons as nodes
+        # Add neurons 
+        max_depth = 0
         for n in genome.neuron_list:
-            nodes.append(n.unique_id)
+            # Entry is a tuple to help positioning nodes later
+            labels[n.unique_id] = (str(n.unique_id), n.depth)
+            if n.depth > max_depth:
+                max_depth = n.depth
+        
         # Add inputs as nodes
-        input_id = max(nodes) + 1
+        input_id = (max_depth + 1) * 10 # * 10 is an offset to keep separation from neurons
         for i in genome.input_list:
-            nodes.append(input_id)
-            labels[input_id] = i.name
+            #nodes.append(input_id)
+            labels[input_id] = (i.name, max_depth)
             input_id_lookup[i.name] = input_id
             input_id += 1
             
@@ -78,9 +82,10 @@ def graph_eant(genome, label_renaming_map=None):
     # rename_labels labels
     if label_renaming_map is not None:
         for k, v in labels.items():
-            if v in label_renaming_map:
-                labels[k] = label_renaming_map[v]
-    return nodes, edges, labels
+            # v Here is a (name, depth) tuple
+            if v[0] in label_renaming_map:
+                labels[k] = (label_renaming_map[v[0]], v[1])
+    return edges, labels
 
 
 def export_eant_tree(genome, label_renaming_map=None, file='tree.png'):
@@ -100,15 +105,29 @@ def export_eant_tree(genome, label_renaming_map=None, file='tree.png'):
     import graphviz as gv
     import os.path
 
-    _, edges, labels = graph_eant(genome, label_renaming_map)
+    edges, labels = graph_eant(genome, label_renaming_map)
     file_name, ext = os.path.splitext(file)
     ext = ext.lstrip('.')
-    g = gv.Digraph(format=ext)
-    for name, label in labels.items():
+    g = gv.Digraph(format=ext, engine='dot', graph_attr={'splines': 'ortho'})
+    g2 = gv.Digraph(format=ext, engine='dot', graph_attr={'splines': 'ortho'})  
+
+    depth_count = {}
+    
+    for name, (label, depth) in labels.items():
+        if depth in depth_count:
+            depth_count[depth] += 1
+        else:
+            depth_count[depth] = 1
+        
+        #g.node(str(name), str(label), pos='{},{}!'.format(depth, depth_count[depth] * 2))  # add node
         g.node(str(name), str(label))  # add node
+        g2.node(str(name), str(label))  # add node
     for name1, name2, label in edges:
-        g.edge(str(name1), str(name2), label=str(""), dir="Forward")  # add edge # label = str(label)
-    g.render(file_name)  
+        g.edge(str(name1), str(name2), xlabel="", dir="Backward")  # add edge # label = str(label)
+        g2.edge(str(name1), str(name2), xlabel=str(label), dir="Forward")  # add edge
+    g.render(file_name)    
+    file_name_labels = file_name + "_labeled"
+    g2.render(file_name_labels) 
     
     
 __all__ = ['export_eant_tree',]

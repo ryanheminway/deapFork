@@ -10,6 +10,7 @@ and the functions to evaluate it as a neural network.
 
 
 from collections import deque
+import numpy as np
 import random
 
 
@@ -79,8 +80,19 @@ class Neuron(Node):
             else:
                 self.curr_output = 0
             return self.curr_output
+        elif self.fn == 'sigmoid':
+            self.curr_output = 1/(1 + np.exp(-val))
+            # Check for overflow
+            if (self.curr_output > 1):
+                self.curr_output = 1
+            elif (self.curr_output < 0):
+                self.curr_output = 0
+            return self.curr_output
+        elif self.fn == 'identity':
+            self.curr_output = val
+            return self.curr_output
         else:
-            return NotImplemented 
+            return NotImplemented
         
     def tracking_value(self): 
         return 1 - self.arity
@@ -162,33 +174,63 @@ class Genome(list):
     """
     def __init__(self, content):
         list.__init__(self, content)
-        # TODO Can we move these out of Genome?
-        # Params for the higher-level EANT algorithm
-        self.parent_cluster = None
-        self.protection_left = 0 
         
-        self.neuron_list = []
-        self.input_list = []
-        self.node_list = []
-        self.node_id_list = []
-        self.max_id = 0
-        # Create lists and do some sanity checks
-        for (node, weight) in content:
-            if (not (node in self.node_list)):
-                self.node_list.append(node)
-                if (isinstance(node, Neuron)):
-                    if (node.unique_id in self.node_id_list):
-                        print("ERROR DUPLICATE IDs")
-                    else:
-                        if (node.unique_id > self.max_id):
-                            self.max_id = node.unique_id
-                            
-                        self.neuron_list.append(node)
-                        self.node_id_list.append(node.unique_id)
-                elif (isinstance(node, InputNode)):
-                    if (not (node in self.input_list)):
-                        self.input_list.append(node)         
+        if (isinstance(content, Genome)):
+            # Track the exact indices where mutation happened, for precise CMA
+            self.indices_added = content.indices_added
+            self.indices_lost = content.indices_lost
+            
+            self.parent_cluster = content.parent_cluster
+            self.protection_left = content.protection_left
+            self.neuron_list = content.neuron_list.copy()
+            self.input_list = content.input_list.copy()
+            self.node_list = content.node_list.copy()
+            self.node_id_list = content.node_id_list.copy()
+            self.max_id = content.max_id
+        else:
+            # TODO Can we move these out of Genome?
+            # Params for the higher-level EANT algorithm
+            self.parent_cluster = None
+            self.protection_left = 0 
+            # Track the exact indices where mutation happened, for precise CMA
+            self.indices_added = []
+            self.indices_lost = []
+            
+            self.neuron_list = []
+            self.input_list = []
+            self.node_list = []
+            self.node_id_list = []
+            self.max_id = 0
+            # Create lists and do some sanity checks
+            for (node, weight) in content:
+                if (not (node in self.node_list)):
+                    self.node_list.append(node)
+                    if (isinstance(node, Neuron)):
+                        if (node.unique_id in self.node_id_list):
+                            print("ERROR DUPLICATE IDs")
+                        else:
+                            if (node.unique_id > self.max_id):
+                                self.max_id = node.unique_id
+                                
+                            self.neuron_list.append(node)
+                            self.node_id_list.append(node.unique_id)
+                    elif (isinstance(node, InputNode)):
+                        if (not (node in self.input_list)):
+                            self.input_list.append(node)   
+      
                      
+    def clone(self):
+        g = Genome(self.copy())
+        g.input_list = self.input_list.copy()
+        g.neuron_list = self.neuron_list.copy()
+        g.node_list = self.node_list.copy()
+        g.node_id_list = self.node_id_list.copy()
+        g.max_id = self.max_id
+        g.parent_cluster = self.parent_cluster
+        g.protection_left = self.protection_left
+        
+        return g
+    
     def step_protection(self):
         if (self.protection_left > 0):
             self.protection_left -= 1
@@ -254,7 +296,7 @@ class Genome(list):
                 if input_node.name == name:
                     input_node.set_value(inputs[name])
 
-    def evaluate(self, start_index=None, stop_index=0, step=True, **inputs):
+    def evaluate(self, start_index=None, stop_index=0, step=False, **inputs):
         """
         Evaluate the Genome in-place. Accomplished by reading
         the Genome right-to-left and performing computations 
@@ -301,7 +343,17 @@ class Genome(list):
                 result = 0
                 for k in range(curr_node.arity):
                     val, weight = call_stack.pop()
-                    result = result + (weight * val)
+                    intermediate_result = (weight * val)
+                    if (np.isinf(intermediate_result) or np.isneginf(intermediate_result)):
+                        print("Neuron result is inf! ")
+                        print("val: ", val)
+                        print("weight: ", weight)
+                        print("Self Genome: ", self)
+                        print("Genome[2]", self[1][0])
+                        print("Callstack: ", call_stack)
+                        exit(1)
+                    result = result + intermediate_result
+
                 # Pass dot product result through activation function
                 result = curr_node.activate(result)
                 call_stack.append((result, curr_weight))
@@ -318,6 +370,7 @@ class Genome(list):
                     #print("Eval a RecurrentJumper")
                     for node in self.neuron_list:
                         if node.unique_id == curr_node.unique_id:
+                            #print("Rec Jumper adding to callstack: ", (node.prev_output, curr_weight) )
                             call_stack.append((node.prev_output, curr_weight))
                             break
                         
@@ -366,7 +419,12 @@ class Genome(list):
         results = []
         for x in range(len(call_stack)):
             final_val, final_weight = call_stack.pop()
-            results.append(final_val * final_weight)
+            final_result = final_val * final_weight
+            if (np.isinf(final_result) or np.isneginf(final_result)):
+                print("What the heck, were getting inf")
+                print("Final val: ", final_val)
+                print("Final weight: ", final_weight)
+            results.append(final_result)
             
         # Finally, update all nodes to track outputs for next timestep
         if step:
@@ -375,10 +433,10 @@ class Genome(list):
         return results
         
 # --------------------- CGE Generation ---------------------- #
-def generate(outputs=1, *input_names):
-    return _generate_minimal(outputs, *input_names)
+def generate(outputs=1, guided=False, classifier=True, *input_names):
+    return _generate_minimal(outputs, guided, classifier, *input_names)
 
-def _generate_minimal(outputs=1, *input_names):
+def _generate_minimal(outputs=1, guided=False, classifier=True, *input_names):
     """
     Generates an EANT individual according to the Common Genetic Encoding (CGE).
     Creates the most minimal individual possible: a NN with connections
@@ -386,6 +444,7 @@ def _generate_minimal(outputs=1, *input_names):
     for differentiation, and all other neuron nodes will be automatically 
     named. 
     """
+    assert(outputs > 0)
     genome = []
     input_nodes = []
     # Make a unique InputNode for each input, according to provided names
@@ -394,15 +453,29 @@ def _generate_minimal(outputs=1, *input_names):
     # For each desired output neuron, make the most basic NN: connections
     # from each input to each output neuron. Fully connected with no hidden
     # layers.
+    if classifier:
+        func = 'sigmoid'
+    else:
+        func = 'relu'
     for i in range(outputs):
-        node = Neuron(i, len(input_names))
+        if guided:
+            node = Neuron(i, len(input_names), fn=func) #           
+        else:
+            node = Neuron(i, 0, fn=func)
         weight = gen_weight()
         genome.append((node, weight))
+        # Guided: add fully connected inputs
+        if guided:
+            for in_node in input_nodes:
+                weight = gen_weight()
+                genome.append((in_node, weight))
+    g = Genome(genome)
+    if not guided:
+        g.input_list = input_nodes
         for in_node in input_nodes:
-            weight = gen_weight()
-            genome.append((in_node, weight))
-        
-    return Genome(genome)
+            g.node_list.append(in_node)
+    # print("Made a genome with input_list: ", g.input_list)
+    return g
         
     
 def gen_weight():
@@ -435,7 +508,7 @@ def _mut_add_jumper(individual, idx):
     target_node = individual[idx][0] 
     # Jumper is Recurrent if target is before the source node in NN
     # Forward if target is after the source node in NN
-    recurrent = (from_node.depth < target_node.depth)
+    recurrent = (from_node.depth <= target_node.depth)
     # Forward connections cannot be allowed to self-connect
     if not recurrent:
         if from_node is target_node:
@@ -444,6 +517,7 @@ def _mut_add_jumper(individual, idx):
     individual.insert(idx + 1, (new_node, new_weight))
     individual.node_list.append(new_node)
     target_node.arity += 1
+    individual.indices_added.append(idx + 1)
     return True
     
 def _mut_del_jumper(individual, idx):
@@ -459,6 +533,7 @@ def _mut_del_jumper(individual, idx):
         if isinstance(sub_node, Jumper):
             removed = individual.pop(idx + j + i)
             target_node.arity -= 1
+            individual.indices_lost.append(idx + j + i)
             return True
         elif isinstance(sub_node, Neuron):
             # Traverse sub genome
@@ -483,9 +558,11 @@ def _mut_add_subgenome(individual, idx):
     target_node = individual[idx][0]
     # Add a new Neuron whose unique_id is 1 above the last largest 
     # Set arity to a random value between 1 and the number of inputs in this NN
+    print("# inputs: ", len(individual.input_list))
     new_node = Neuron(individual.max_id + 1, arity=random.randint(1, len(individual.input_list)), depth=target_node.depth + 1)
     individual.max_id += 1
     individual.insert(idx + 1, (new_node, new_weight))
+    individual.indices_added.append(idx + 1)
     individual.neuron_list.append(new_node)
     individual.node_list.append(new_node)
     target_node.arity += 1
@@ -499,7 +576,7 @@ def _mut_add_subgenome(individual, idx):
             """ Only allowing forward jumpers because of CGE paper """
             # Add a forward jumper connection
             # Find a "from" node for new connection
-            forw_choices = [x for x in individual.neuron_list if (x.depth >= new_target.depth and x != new_target)]
+            forw_choices = [x for x in individual.neuron_list if (x.depth > new_target.depth and x != new_target)]
             if (len(forw_choices) != 0):
                 from_node = random.choice(forw_choices) # individual.neuron_list)
                 new_weight = gen_weight()
@@ -514,13 +591,17 @@ def _mut_add_subgenome(individual, idx):
 
         # Insert new connection
         individual.insert(idx + 1, (new_node, new_weight))
+        individual.indices_added.append(idx + 1)
         individual.node_list.append(new_node)
         new_nodes += 1
         idx += 1
     return new_nodes
 
 def _mut_genome(individual, ind_pb=1):
-    new_individual = Genome(individual.copy())
+    new_individual = individual.clone() 
+    # Start of new mutation, erase old tracking to start new
+    new_individual.indices_added = []
+    new_individual.indices_lost = []
     nodes_added = 0
     for i in range(len(individual)):
         node, weight = new_individual[i + nodes_added]
@@ -611,7 +692,7 @@ def _are_subnetworks_similar(sub_net_1, sub_net_2, id_dict_1, id_dict_2):
     True if subnetworks are similar, else False.
     """
     i = 1 # Skip first Neuron
-    used = [] # Nodes in second subnetwork already used in a match
+    used_indices = [] # Nodes in second subnetwork already used in a match
     while (i < len(sub_net_1)):
         node_to_check = sub_net_1[i]
         # Search for a similar node in second subnetwork
@@ -620,12 +701,12 @@ def _are_subnetworks_similar(sub_net_1, sub_net_2, id_dict_1, id_dict_2):
         found = False
         while (j < len(sub_net_2)):
             sub_node = sub_net_2[j]
-            if (sub_node not in used):
+            if (j not in used_indices):
                 # TODO This logic is redundant 
                 # Simplest case: InputNodes
                 if isinstance(node_to_check, InputNode):
                     if node_to_check.is_similar(sub_node):
-                        used.append(sub_node)
+                        used_indices.append(j)
                         found = True
                         break
                 # Edge cases with Jumpers
@@ -635,7 +716,7 @@ def _are_subnetworks_similar(sub_net_1, sub_net_2, id_dict_1, id_dict_2):
                         parent_2 = id_dict_2[sub_node.unique_id]
                         # Jumpers are similar if they connect to similar nodes
                         if parent_1.is_similar(parent_2):
-                            used.append(sub_node)
+                            used_indices.append(j)
                             found = True
                             break
                     elif isinstance(sub_node, Neuron): # Edge case: Jumpers can match with Neuron
@@ -643,13 +724,13 @@ def _are_subnetworks_similar(sub_net_1, sub_net_2, id_dict_1, id_dict_2):
                         parent_2 = sub_node
                         # Jumpers are similar if they connect to similar nodes
                         if parent_1.is_similar(parent_2):
-                            used.append(sub_node)
+                            used_indices.append(j)
                             found = True
                             break
                 # Edge cases with Neurons
                 elif isinstance(node_to_check, Neuron):
                     if node_to_check.is_similar(sub_node):
-                        used.append(sub_node)
+                        used_indices.append(j)
                         found = True
                         break
                     elif isinstance(sub_node, Jumper):
@@ -657,7 +738,7 @@ def _are_subnetworks_similar(sub_net_1, sub_net_2, id_dict_1, id_dict_2):
                         parent_2 = id_dict_2[sub_node.unique_id]
                         # Jumpers are similar if they connect to similar nodes
                         if parent_1.is_similar(parent_2):
-                            used.append(sub_node)
+                            used_indices.append(j)
                             found = True
                             break
             else:
@@ -740,7 +821,7 @@ def are_graphs_similar(ind1, ind2):
             # Check if parent node is similar
             if node.is_similar(node_2):
                 # Check if all nodes in subnetworks appear similar
-                # TODO This is a loose check... does not check Jumpers go to identical nodes (just similar)
+                # This is a loose check... does not check Jumpers go to identical nodes (just similar)
                 if _are_subnetworks_similar(sub_repr_1[node], sub_repr_2[node_2], id_dict_1, id_dict_2): 
                     # This node and subnetwork is similar. Remove it from
                     # potential candidates of future matches 
